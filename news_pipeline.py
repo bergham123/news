@@ -17,13 +17,13 @@ from moviepy.editor import (
 from moviepy.audio.AudioClip import CompositeAudioClip, concatenate_audioclips
 
 # ==================== CONFIG ====================
-RSS_URL = "https://www.telegraphe.ma/rss/latest-posts"
-LAST_FILE = "last_news.txt"
+RSS_URL       = "https://www.telegraphe.ma/rss/latest-posts"
+LAST_FILE     = "last_news.txt"
 WIDTH, HEIGHT = 1200, 700
-OUTPUT_IMAGE = "output.webp"
-OUTPUT_VIDEO = "final_news_video.mp4"
-VIDEO_START = "video.mp4"
-VIDEO_END   = "videoend.mp4"
+OUTPUT_IMAGE  = "output.webp"
+OUTPUT_VIDEO  = "final_news_video.mp4"
+VIDEO_START   = "video.mp4"
+VIDEO_END     = "videoend.mp4"
 
 # ==================== AI CONFIG ====================
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
@@ -34,7 +34,7 @@ client = OpenAI(
 
 # ==================== TELEGRAM CONFIG ====================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-CHAT_ID = "@natureptv"
+CHAT_ID   = "@natureptv"
 
 # ==================== COLORS ====================
 BG_COLOR = (10, 22, 40)
@@ -49,16 +49,26 @@ SUMMARY_BG_COLORS = [
 ]
 
 # ==================== FONTS ====================
-try:
-    FONT_TITLE   = ImageFont.truetype("arial.ttf", 45)
-    FONT_SMALL   = ImageFont.truetype("arial.ttf", 28)
-    FONT_TINY    = ImageFont.truetype("arial.ttf", 22)
-    FONT_SUMMARY = ImageFont.truetype("arial.ttf", 38)
-except Exception:
-    FONT_TITLE   = ImageFont.load_default()
-    FONT_SMALL   = ImageFont.load_default()
-    FONT_TINY    = ImageFont.load_default()
-    FONT_SUMMARY = ImageFont.load_default()
+# Amiri font files must be in the fonts/ folder of your repo:
+#   fonts/Amiri-Regular.ttf
+#   fonts/Amiri-Bold.ttf
+BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
+FONTS_DIR  = os.path.join(BASE_DIR, "fonts")
+AMIRI_REG  = os.path.join(FONTS_DIR, "Amiri-Regular.ttf")
+AMIRI_BOLD = os.path.join(FONTS_DIR, "Amiri-Bold.ttf")
+
+def load_amiri(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+    path = AMIRI_BOLD if (bold and os.path.exists(AMIRI_BOLD)) else AMIRI_REG
+    if not os.path.exists(path):
+        print(f"⚠️  Amiri font not found at {path} — Arabic will show as squares.")
+        return ImageFont.load_default()
+    font = ImageFont.truetype(path, size)
+    return font
+
+FONT_TITLE   = load_amiri(45, bold=True)
+FONT_SMALL   = load_amiri(28)
+FONT_TINY    = load_amiri(22)
+FONT_SUMMARY = load_amiri(38)
 
 # ==================== ARABIC HELPERS ====================
 def fix_arabic(text: str) -> str:
@@ -194,12 +204,10 @@ def fetch_rss_feed() -> List[Dict]:
             enclosure = item.find('enclosure')
             if enclosure is not None and enclosure.get('type', '').startswith('image/'):
                 image_url = enclosure.get('url')
-
             if image_url is None:
                 media = item.find('{http://search.yahoo.com/mrss/}content')
                 if media is not None:
                     image_url = media.get('url')
-
             if image_url is None and description is not None and description.text:
                 m = re.search(r'src="([^"]+)"', description.text)
                 if m:
@@ -331,7 +339,6 @@ def create_video(image_paths: List[str]) -> str:
     target_width  = WIDTH
     target_height = HEIGHT
 
-    # Detect resolution from intro video
     if os.path.exists(VIDEO_START):
         probe = VideoFileClip(VIDEO_START)
         target_width, target_height = probe.w, probe.h
@@ -339,28 +346,23 @@ def create_video(image_paths: List[str]) -> str:
         print(f"📐 Resolution: {target_width}x{target_height}")
         clips.append(VideoFileClip(VIDEO_START))
 
-    # Add news images (5 s each)
     for img_path in image_paths:
         resized = resize_to_match_video(img_path, target_width, target_height)
         clips.append(ImageClip(resized).set_duration(5))
 
-    # Add outro video
     if os.path.exists(VIDEO_END):
         clips.append(VideoFileClip(VIDEO_END))
 
-    # Write silent temp video
     temp_video = "temp_video_no_audio.mp4"
     concatenate_videoclips(clips, method="compose").write_videofile(
         temp_video, fps=24, codec='libx264', verbose=False, logger=None
     )
 
-    # Clean up resized temp images
     for img_path in image_paths:
         tmp = f"temp_resized_{os.path.basename(img_path)}"
         if os.path.exists(tmp):
             os.remove(tmp)
 
-    # Add background music
     if os.path.exists("sound.mp3"):
         try:
             video_clip     = VideoFileClip(temp_video)
