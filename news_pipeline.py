@@ -53,19 +53,27 @@ SUMMARY_BG_COLORS = [
 ]
 
 # ==================== FONT ====================
-FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+# ==================== FONT ====================
 
-try:
-    FONT_TITLE = ImageFont.truetype(FONT_PATH, 45)
-    FONT_SMALL = ImageFont.truetype(FONT_PATH, 28)
-    FONT_TINY = ImageFont.truetype(FONT_PATH, 22)
-    FONT_SUMMARY = ImageFont.truetype(FONT_PATH, 38)
+FONT_TITLE = ImageFont.truetype(
+    "fonts/Amiri-Bold.ttf",
+    45
+)
 
-except:
-    FONT_TITLE = ImageFont.load_default()
-    FONT_SMALL = ImageFont.load_default()
-    FONT_TINY = ImageFont.load_default()
-    FONT_SUMMARY = ImageFont.load_default()
+FONT_SMALL = ImageFont.truetype(
+    "fonts/Amiri-Regular.ttf",
+    28
+)
+
+FONT_TINY = ImageFont.truetype(
+    "fonts/Amiri-Regular.ttf",
+    22
+)
+
+FONT_SUMMARY = ImageFont.truetype(
+    "fonts/Amiri-Bold.ttf",
+    38
+)
 
 # ==================== ARABIC ====================
 def fix_arabic(text: str) -> str:
