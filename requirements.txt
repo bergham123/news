@@ -1,0 +1,12 @@
+requests
+Pillow
+arabic-reshaper
+python-bidi
+python-telegram-bot==20.7
+openai
+moviepy==1.0.3
+imageio==2.33.1
+imageio-ffmpeg==0.4.9
+decorator==4.4.2
+tqdm
+numpy
