@@ -1,20 +1,15 @@
 name: News Bot
 
 on:
-
   workflow_dispatch:
-
   schedule:
     - cron: "0 */6 * * *"
 
 jobs:
-
   run-bot:
-
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -23,16 +18,26 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install ffmpeg and fonts
+      - name: Install system dependencies for Arabic rendering
         run: |
           sudo apt update
           sudo apt install -y ffmpeg
           sudo apt install -y fonts-dejavu-core fonts-freefont-ttf
+          # Critical libraries for proper Arabic text shaping in PIL
+          sudo apt install -y libraqm0 libfribidi0 libharfbuzz0b
+          sudo apt install -y libraqm-dev libfribidi-dev libharfbuzz-dev
+          sudo apt install -y libfreetype6-dev libjpeg-dev zlib1g-dev
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
+          # Force rebuild Pillow so it links against libraqm
+          pip install --upgrade --force-reinstall --no-binary=:all: Pillow
           pip install -r requirements.txt
+
+      - name: Verify Pillow has raqm support
+        run: |
+          python -c "from PIL import features; print('raqm support:', features.check('raqm'))"
 
       - name: Run bot
         env:
@@ -45,9 +50,6 @@ jobs:
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
-
           git add last_news.txt
-
           git diff --cached --quiet || git commit -m "update last news"
-
           git push
