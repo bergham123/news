@@ -1,17 +1,21 @@
-name: News Video Bot
+name: News Bot
 
 on:
+
   workflow_dispatch:
 
   schedule:
     - cron: "0 */6 * * *"
 
 jobs:
+
   run-bot:
+
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -19,19 +23,15 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install ffmpeg
+      - name: Install ffmpeg and fonts
         run: |
           sudo apt update
           sudo apt install -y ffmpeg
-
-      - name: Install Arabic fonts
-        run: |
-          sudo apt install -y fonts-dejavu-core
-          fc-cache -f -v
+          sudo apt install -y fonts-dejavu-core fonts-freefont-ttf
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Run bot
