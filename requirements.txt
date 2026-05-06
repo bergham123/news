@@ -1,12 +1,7 @@
-requests
-arabic-reshaper>=3.0.0
+requests>=2.31.0
+Pillow>=10.0.0
+arabic_reshaper>=3.0.0
 python-bidi>=0.4.2
-moviepy==1.0.3
-openai>=1.0.0
+moviepy>=1.0.3
 python-telegram-bot>=20.0
-numpy<2.0
-imageio==2.31.1
-imageio-ffmpeg
-decorator>=4.0.2
-proglog
-tqdm
+openai>=1.0.0
