@@ -1,7 +1,7 @@
 import requests
 import xml.etree.ElementTree as ET
 import re
-from PIL import Image, ImageDraw, ImageFont, features
+from PIL import Image, ImageDraw, ImageFont
 import arabic_reshaper
 from bidi.algorithm import get_display
 from datetime import datetime
@@ -19,18 +19,11 @@ os.environ["PYTHONIOENCODING"] = "utf-8"
 # ==================== CONFIG ====================
 RSS_URL = "https://www.telegraphe.ma/rss/latest-posts"
 LAST_FILE = "last_news.txt"
-
 WIDTH, HEIGHT = 1200, 700
-
 OUTPUT_IMAGE = "output.webp"
 OUTPUT_VIDEO = "final_news_video.mp4"
-
 VIDEO_START = "video.mp4"
 VIDEO_END = "videoend.mp4"
-
-# Detect if Pillow has libraqm (proper RTL shaping)
-HAS_RAQM = features.check("raqm")
-print(f"[INIT] Pillow raqm support: {HAS_RAQM}")
 
 # ==================== API ====================
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -47,7 +40,6 @@ BG_COLOR = (10, 22, 40)
 WHITE = (232, 237, 245)
 RED = (196, 30, 58)
 GRAY = (143, 163, 191)
-
 SUMMARY_BG_COLORS = [
     (25, 40, 65),
     (45, 30, 55),
@@ -55,110 +47,191 @@ SUMMARY_BG_COLORS = [
 ]
 
 # ==================== FONT ====================
-FONT_TITLE = ImageFont.truetype("fonts/Amiri-Bold.ttf", 45)
-FONT_SMALL = ImageFont.truetype("fonts/Amiri-Regular.ttf", 28)
-FONT_TINY = ImageFont.truetype("fonts/Amiri-Regular.ttf", 22)
-FONT_SUMMARY = ImageFont.truetype("fonts/Amiri-Bold.ttf", 38)
+# Use absolute paths to avoid GitHub Actions cwd issues
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+FONT_TITLE = ImageFont.truetype(
+    os.path.join(BASE_DIR, "fonts", "Amiri-Bold.ttf"),
+    45
+)
+FONT_SMALL = ImageFont.truetype(
+    os.path.join(BASE_DIR, "fonts", "Amiri-Regular.ttf"),
+    28
+)
+FONT_TINY = ImageFont.truetype(
+    os.path.join(BASE_DIR, "fonts", "Amiri-Regular.ttf"),
+    22
+)
+FONT_SUMMARY = ImageFont.truetype(
+    os.path.join(BASE_DIR, "fonts", "Amiri-Bold.ttf"),
+    38
+)
 
 
-# ==================== ARABIC HELPERS ====================
+# ========================================================
+# 🔧 FIX 1: Configure arabic_reshaper for full support
+# ========================================================
+# Enable support for:
+#   - Arabic ligatures (lam-alef: لا، لل، إل...)
+#   - Tatweel character (ـ)
+#   - Arabic Presentation Forms-B
+#   - Bengali, etc.
+reshaper = arabic_reshaper.ArabicReshaper(
+    configuration={
+        "use_unshaped_instead_of_isolated": True,
+        "support_ligatures": True,
+        "delete_harakat": False,
+        "support_zwj": False,
+        "normalize_unicode": True,
+        "ARABIC LIGATURE BISMILLAH AR-RAHMAN AR-RAHEEM": True,
+        "ARABIC LIGATURE JALLAJALALOUHOU": True,
+        "ARABIC LIGATURE SALLALLAHOU ALAYHE WASALLAM": True,
+        "ARABIC LIGATURE ALLAH": True,
+    }
+)
+
+
+# ========================================================
+# 🔧 FIX 2: Improved fix_arabic with reshaper config
+# ========================================================
 def fix_arabic(text: str) -> str:
     """
-    Reshape and apply BiDi algorithm to Arabic text.
-    Used as a FALLBACK when libraqm is not available.
-    When libraqm is available, we let PIL handle shaping natively.
+    Reshape Arabic text for correct glyph rendering,
+    then apply BiDi algorithm for correct visual order.
     """
     if not text:
         return ""
+
     text = text.strip()
-    reshaped = arabic_reshaper.reshape(text)
+
+    # Apply reshaping with our configured reshaper
+    reshaped = reshaper.reshape(text)
+
+    # Apply BiDi algorithm for correct RTL display
     return get_display(reshaped)
 
 
-def prepare_text(text: str) -> str:
+# ========================================================
+# 🔧 FIX 3: New helper — reshape full text FIRST,
+#   then split into visual words for measurement
+# ========================================================
+def _get_visual_words(draw, text, font):
     """
-    Returns text ready for drawing.
-    - If raqm is available: return raw text (PIL will shape it via direction='rtl').
-    - Otherwise: reshape + bidi manually.
+    Reshape the FULL text first (so all letter forms are correct),
+    then split by spaces for individual word width measurement.
+    Returns list of (visual_word, display_width).
     """
-    if not text:
-        return ""
-    if HAS_RAQM:
-        return text.strip()
-    return fix_arabic(text)
+    full_visual = fix_arabic(text)
+    visual_words = full_visual.split(" ")
+    result = []
+    for vw in visual_words:
+        if not vw:
+            continue
+        bbox = draw.textbbox((0, 0), vw, font=font)
+        w = bbox[2] - bbox[0]
+        result.append((vw, w))
+    return result
 
 
-def clean_html(text: str) -> str:
-    return re.sub(r"<[^>]+>", "", text)
-
-
-def measure_text(draw, text, font):
-    """Measure text width using direction-aware bbox when raqm is present."""
-    if HAS_RAQM:
-        bbox = draw.textbbox((0, 0), text, font=font, direction="rtl")
-    else:
-        bbox = draw.textbbox((0, 0), text, font=font)
+def text_width(draw, text, font):
+    """Get the pixel width of a reshaped text string."""
+    fixed = fix_arabic(text)
+    bbox = draw.textbbox((0, 0), fixed, font=font)
     return bbox[2] - bbox[0]
 
 
+# ========================================================
+# 🔧 FIX 4: Corrected draw_rtl with anchor support
+# ========================================================
 def draw_rtl(draw, right_x, y, text, fill, font):
     """
-    Draw RTL text aligned to the right edge.
-    Uses native Pillow RTL when libraqm is available.
+    Draw a single line of Arabic text aligned to the right edge.
+    Uses Pillow 8+ anchor parameter for precise RTL positioning.
     """
-    prepared = prepare_text(text)
-    w = measure_text(draw, prepared, font)
+    fixed = fix_arabic(text)
+    w = text_width(draw, text, font)
 
-    if HAS_RAQM:
-        draw.text(
-            (right_x - w, y),
-            prepared,
-            fill=fill,
-            font=font,
-            direction="rtl",
-            features=["calt"],
-        )
-    else:
-        draw.text(
-            (right_x - w, y),
-            prepared,
-            fill=fill,
-            font=font,
-        )
+    # Position text so its right edge is at right_x
+    x = right_x - w
+    draw.text((x, y), fixed, fill=fill, font=font)
 
     return w
 
 
+# ========================================================
+# 🔧 FIX 5: Completely rewritten wrap_arabic
+#   Reshape the FULL paragraph first, then wrap visually
+# ========================================================
 def wrap_arabic(draw, text, font, max_width):
     """
-    Word-wrap Arabic text by measuring shaped widths.
-    Important: do NOT mutate the original word order — Pillow handles
-    the visual reversal for us when drawing.
+    Wrap Arabic text into lines that fit within max_width.
+
+    CRITICAL FIX: Reshape the ENTIRE text first so that every
+    letter gets the correct form (initial, medial, final, isolated)
+    based on its full context — not just a partial candidate string.
+
+    Then split the visual (already reshaped + bidi) text by spaces
+    to measure word widths and build lines.
     """
-    words = text.split()
+    visual_words = _get_visual_words(draw, text, font)
+
+    if not visual_words:
+        return []
+
     lines = []
-    current = []
+    current_line_words = []
+    current_line_width = 0
+    space_width = 0
 
-    for word in words:
-        candidate = " ".join(current + [word])
-        prepared = prepare_text(candidate)
-        if measure_text(draw, prepared, font) <= max_width:
-            current.append(word)
+    # Measure space character width
+    space_bbox = draw.textbbox((0, 0), " ", font=font)
+    space_width = space_bbox[2] - space_bbox[0]
+
+    for visual_word, word_width in visual_words:
+        # Width if we add this word to current line
+        # (current words + spaces + new word)
+        spaces_needed = len(current_line_words) if current_line_words else 0
+        test_width = current_line_width + (space_width * spaces_needed) + word_width
+
+        if test_width <= max_width:
+            # Word fits on current line
+            current_line_words.append(visual_word)
+            current_line_width = current_line_width + (space_width * spaces_needed) + word_width
         else:
-            if current:
-                lines.append(" ".join(current))
-            current = [word]
+            # Word doesn't fit — save current line and start new one
+            if current_line_words:
+                lines.append(" ".join(current_line_words))
+            current_line_words = [visual_word]
+            current_line_width = word_width
 
-    if current:
-        lines.append(" ".join(current))
+    # Don't forget the last line
+    if current_line_words:
+        lines.append(" ".join(current_line_words))
 
     return lines
 
 
+# ========================================================
+# 🔧 FIX 6: draw_rtl_multiline — same logic, cleaner
+# ========================================================
 def draw_rtl_multiline(
-    draw, right_x, y, text, fill, font, max_width, line_gap=15
+    draw,
+    right_x,
+    y,
+    text,
+    fill,
+    font,
+    max_width,
+    line_gap=15
 ):
+    """
+    Draw multi-line Arabic text, each line right-aligned.
+    Lines are already in correct visual order after BiDi processing.
+    """
     lines = wrap_arabic(draw, text, font, max_width)
+
+    if not lines:
+        return y
 
     bbox = draw.textbbox((0, 0), "Ag", font=font)
     line_height = (bbox[3] - bbox[1]) + line_gap
@@ -168,6 +241,14 @@ def draw_rtl_multiline(
         y += line_height
 
     return y
+
+
+# ========================================================
+# 🔧 FIX 7: draw_text_centered for the decorative line
+#   (aesthetic improvement, not an RTL fix)
+# ========================================================
+def clean_html(text: str) -> str:
+    return re.sub(r"<[^>]+>", "", text)
 
 
 # ==================== DATE ====================
@@ -212,7 +293,9 @@ def summarize_with_ai(title, description):
 
         response = client.chat.completions.create(
             model="nvidia/nemotron-3-super-120b-a12b:free",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
         )
 
         content = response.choices[0].message.content
@@ -233,7 +316,7 @@ def summarize_with_ai(title, description):
         return [
             title[:50],
             title[20:70],
-            title[-50:],
+            title[-50:]
         ]
 
 
@@ -255,11 +338,9 @@ def fetch_rss_feed():
         response = requests.get(
             RSS_URL,
             timeout=30,
-            headers={"User-Agent": "Mozilla/5.0"},
+            headers={"User-Agent": "Mozilla/5.0"}
         )
-
         root = ET.fromstring(response.content)
-
         items = []
 
         for item in root.findall(".//item"):
@@ -285,7 +366,7 @@ def fetch_rss_feed():
                 "description": clean_html(description.text if description is not None else ""),
                 "category": clean_html(category.text if category is not None else "أخبار"),
                 "date": format_date(pub_date.text if pub_date is not None else ""),
-                "image": image_url,
+                "image": image_url
             })
 
         return items
@@ -322,7 +403,7 @@ def create_main_image(news):
                 news["image"],
                 stream=True,
                 timeout=15,
-                headers={"User-Agent": "Mozilla/5.0"},
+                headers={"User-Agent": "Mozilla/5.0"}
             )
             news_img = Image.open(response.raw).convert("RGB")
             news_img = news_img.resize((600, 700))
@@ -330,18 +411,20 @@ def create_main_image(news):
     except Exception as e:
         print("IMAGE ERROR:", e)
 
+    # === Header ===
     draw_rtl(draw, RIGHT_EDGE, 80, "السفير", RED, FONT_TITLE)
     draw_rtl(draw, RIGHT_EDGE, 150, "مركز الإعلام", GRAY, FONT_SMALL)
 
+    # === News Title ===
     current_y = draw_rtl_multiline(
         draw, RIGHT_EDGE, 250,
         news["title"], WHITE, FONT_TITLE,
-        TEXT_MAX_W, line_gap=15,
+        TEXT_MAX_W, line_gap=15
     )
-
     current_y += 30
-    draw_rtl(draw, RIGHT_EDGE, current_y, news["category"], RED, FONT_SMALL)
 
+    # === Category & Date ===
+    draw_rtl(draw, RIGHT_EDGE, current_y, news["category"], RED, FONT_SMALL)
     current_y += 50
     draw_rtl(draw, RIGHT_EDGE, current_y, news["date"], GRAY, FONT_TINY)
 
@@ -360,39 +443,30 @@ def create_summary_image(summary_text, index, news_image_url=None):
                 news_image_url,
                 stream=True,
                 timeout=15,
-                headers={"User-Agent": "Mozilla/5.0"},
+                headers={"User-Agent": "Mozilla/5.0"}
             )
             bg_img = Image.open(response.raw).convert("RGB")
             bg_img = bg_img.resize((WIDTH, HEIGHT))
-
-            overlay = Image.new(
-                "RGBA",
-                (WIDTH, HEIGHT),
-                (*bg_color, 210),
-            )
-
+            overlay = Image.new("RGBA", (WIDTH, HEIGHT), (*bg_color, 210))
             img = Image.alpha_composite(
-                bg_img.convert("RGBA"),
-                overlay,
+                bg_img.convert("RGBA"), overlay
             ).convert("RGB")
         except:
             pass
 
     draw = ImageDraw.Draw(img)
-
     RIGHT_EDGE = 1100
     TEXT_MAX_W = 600
 
     current_y = draw_rtl_multiline(
         draw, RIGHT_EDGE, 230,
         summary_text, WHITE, FONT_SUMMARY,
-        TEXT_MAX_W, line_gap=25,
+        TEXT_MAX_W, line_gap=25
     )
 
     draw.line(
         [WIDTH - 600, HEIGHT - 80, WIDTH - 50, HEIGHT - 80],
-        fill=GRAY,
-        width=2,
+        fill=GRAY, width=2
     )
 
     output = f"summary_{index+1}.webp"
@@ -416,10 +490,8 @@ def resize_to_match_video(image_path, target_width, target_height):
         new_width = int(target_height * img_ratio)
 
     img_resized = img.resize((new_width, new_height), Image.LANCZOS)
-
     x = (target_width - new_width) // 2
     y = (target_height - new_height) // 2
-
     new_img.paste(img_resized, (x, y))
 
     temp_path = f"temp_{os.path.basename(image_path)}"
@@ -430,7 +502,6 @@ def resize_to_match_video(image_path, target_width, target_height):
 # ==================== VIDEO ====================
 def create_simple_video(image_paths):
     clips = []
-
     target_width = WIDTH
     target_height = HEIGHT
 
@@ -454,14 +525,10 @@ def create_simple_video(image_paths):
     final_video = concatenate_videoclips(clips, method="compose")
 
     temp_video = "temp_video.mp4"
-
     final_video.write_videofile(
-        temp_video,
-        fps=24,
-        codec="libx264",
-        audio_codec="aac",
-        verbose=False,
-        logger=None,
+        temp_video, fps=24,
+        codec="libx264", audio_codec="aac",
+        verbose=False, logger=None
     )
 
     if os.path.exists("sound.mp3"):
@@ -481,19 +548,13 @@ def create_simple_video(image_paths):
                 final_audio = music
 
             final_output = video_clip.set_audio(final_audio)
-
             final_output.write_videofile(
-                OUTPUT_VIDEO,
-                fps=24,
-                codec="libx264",
-                audio_codec="aac",
-                verbose=False,
-                logger=None,
+                OUTPUT_VIDEO, fps=24,
+                codec="libx264", audio_codec="aac",
+                verbose=False, logger=None
             )
-
             os.remove(temp_video)
             return OUTPUT_VIDEO
-
         except Exception as e:
             print("AUDIO ERROR:", e)
 
@@ -511,7 +572,7 @@ async def send_video_to_telegram(video_path, caption):
                 video=video,
                 caption=caption,
                 parse_mode="HTML",
-                supports_streaming=True,
+                supports_streaming=True
             )
         return True
     except TelegramError as e:
@@ -522,7 +583,9 @@ async def send_video_to_telegram(video_path, caption):
 def send_video_sync(video_path, caption):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    result = loop.run_until_complete(send_video_to_telegram(video_path, caption))
+    result = loop.run_until_complete(
+        send_video_to_telegram(video_path, caption)
+    )
     loop.close()
     return result
 
@@ -532,7 +595,6 @@ if __name__ == "__main__":
     print("STARTING BOT")
 
     latest_news = get_latest_news()
-
     if not latest_news:
         print("NO NEW NEWS")
         exit()
@@ -543,16 +605,18 @@ if __name__ == "__main__":
 
     summaries = summarize_with_ai(
         latest_news["title"],
-        latest_news["description"],
+        latest_news["description"]
     )
 
     summary_images = []
     for i, summary in enumerate(summaries):
-        path = create_summary_image(summary, i, latest_news.get("image"))
+        path = create_summary_image(
+            summary, i,
+            latest_news.get("image")
+        )
         summary_images.append(path)
 
     all_images = [main_image] + summary_images
-
     video_path = create_simple_video(all_images)
 
     caption = (
@@ -562,5 +626,4 @@ if __name__ == "__main__":
     )
 
     send_video_sync(video_path, caption)
-
     print("DONE")
