@@ -1,0 +1,70 @@
+name: News Pipeline
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # every hour at :00
+  workflow_dispatch:        # allow manual trigger from GitHub UI
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # ── 1. Checkout repo ────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Python setup ─────────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ── 3. System deps (ffmpeg + font) ──────────────────────────────────────
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg fonts-freefont-ttf
+          # symlink a generic TTF as arial.ttf so Pillow finds it
+          sudo ln -sf /usr/share/fonts/truetype/freefont/FreeSans.ttf /usr/local/share/fonts/arial.ttf
+          fc-cache -f
+
+      # ── 4. Python deps ──────────────────────────────────────────────────────
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      # ── 5. Restore last_news.txt from cache so we never re-post ────────────
+      - name: Restore seen-news cache
+        uses: actions/cache@v4
+        with:
+          path: last_news.txt
+          key: last-news-${{ github.run_id }}
+          restore-keys: last-news-
+
+      # ── 6. Restore media assets from cache (video.mp4, videoend.mp4, sound.mp3)
+      - name: Restore media assets cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            video.mp4
+            videoend.mp4
+            sound.mp3
+          key: media-assets-v1
+
+      # ── 7. Run the pipeline ─────────────────────────────────────────────────
+      - name: Run news pipeline
+        env:
+          # Store secrets in: Settings → Secrets → Actions
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        run: python news_pipeline.py
+
+      # ── 8. Save updated last_news.txt back to cache ─────────────────────────
+      - name: Save seen-news cache
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: last_news.txt
+          key: last-news-${{ github.run_id }}
