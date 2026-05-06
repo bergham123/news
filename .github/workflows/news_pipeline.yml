@@ -1,70 +1,53 @@
-name: News Pipeline
+name: News Video Bot
 
 on:
+  workflow_dispatch:
+
   schedule:
-    - cron: '0 * * * *'   # every hour at :00
-  workflow_dispatch:        # allow manual trigger from GitHub UI
+    - cron: "0 */6 * * *"
 
 jobs:
-  run-pipeline:
+  run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
 
     steps:
-      # ── 1. Checkout repo ────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Python setup ─────────────────────────────────────────────────────
-      - name: Set up Python 3.11
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: "3.11"
 
-      # ── 3. System deps (ffmpeg + font) ──────────────────────────────────────
-      - name: Install system dependencies
+      - name: Install ffmpeg
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg fonts-freefont-ttf
-          # symlink a generic TTF as arial.ttf so Pillow finds it
-          sudo ln -sf /usr/share/fonts/truetype/freefont/FreeSans.ttf /usr/local/share/fonts/arial.ttf
-          fc-cache -f
+          sudo apt update
+          sudo apt install -y ffmpeg
 
-      # ── 4. Python deps ──────────────────────────────────────────────────────
-      - name: Install Python dependencies
-        run: pip install -r requirements.txt
+      - name: Install Arabic fonts
+        run: |
+          sudo apt install -y fonts-dejavu-core
+          fc-cache -f -v
 
-      # ── 5. Restore last_news.txt from cache so we never re-post ────────────
-      - name: Restore seen-news cache
-        uses: actions/cache@v4
-        with:
-          path: last_news.txt
-          key: last-news-${{ github.run_id }}
-          restore-keys: last-news-
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
 
-      # ── 6. Restore media assets from cache (video.mp4, videoend.mp4, sound.mp3)
-      - name: Restore media assets cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            video.mp4
-            videoend.mp4
-            sound.mp3
-          key: media-assets-v1
-
-      # ── 7. Run the pipeline ─────────────────────────────────────────────────
-      - name: Run news pipeline
+      - name: Run bot
         env:
-          # Store secrets in: Settings → Secrets → Actions
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-        run: python news_pipeline.py
+        run: |
+          python news_pipeline.py
 
-      # ── 8. Save updated last_news.txt back to cache ─────────────────────────
-      - name: Save seen-news cache
-        if: always()
-        uses: actions/cache@v4
-        with:
-          path: last_news.txt
-          key: last-news-${{ github.run_id }}
+      - name: Commit last_news.txt
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+
+          git add last_news.txt
+
+          git diff --cached --quiet || git commit -m "update last news"
+
+          git push
