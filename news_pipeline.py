@@ -2,8 +2,6 @@ import requests
 import xml.etree.ElementTree as ET
 import re
 from PIL import Image, ImageDraw, ImageFont
-import arabic_reshaper
-from bidi.algorithm import get_display
 from datetime import datetime
 import os
 from typing import List, Dict, Optional
@@ -17,17 +15,22 @@ from moviepy.audio.AudioClip import CompositeAudioClip, concatenate_audioclips
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
 # ==================== CONFIG ====================
-RSS_URL = "https://www.telegraphe.ma/rss/latest-posts"
+RSS_URL = "https://www.telegraphe.ma/fr/rss/latest-posts"
+
 LAST_FILE = "last_news.txt"
+
 WIDTH, HEIGHT = 1200, 700
+
 OUTPUT_IMAGE = "output.webp"
 OUTPUT_VIDEO = "final_news_video.mp4"
+
 VIDEO_START = "video.mp4"
 VIDEO_END = "videoend.mp4"
 
 # ==================== API ====================
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+
 CHAT_ID = "@natureptv"
 
 client = OpenAI(
@@ -40,6 +43,7 @@ BG_COLOR = (10, 22, 40)
 WHITE = (232, 237, 245)
 RED = (196, 30, 58)
 GRAY = (143, 163, 191)
+
 SUMMARY_BG_COLORS = [
     (25, 40, 65),
     (45, 30, 55),
@@ -47,188 +51,86 @@ SUMMARY_BG_COLORS = [
 ]
 
 # ==================== FONT ====================
-# Use absolute paths to avoid GitHub Actions cwd issues
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 FONT_TITLE = ImageFont.truetype(
     os.path.join(BASE_DIR, "fonts", "Amiri-Bold.ttf"),
-    45
+    42
 )
+
 FONT_SMALL = ImageFont.truetype(
     os.path.join(BASE_DIR, "fonts", "Amiri-Regular.ttf"),
     28
 )
+
 FONT_TINY = ImageFont.truetype(
     os.path.join(BASE_DIR, "fonts", "Amiri-Regular.ttf"),
     22
 )
+
 FONT_SUMMARY = ImageFont.truetype(
     os.path.join(BASE_DIR, "fonts", "Amiri-Bold.ttf"),
-    38
+    36
 )
 
-
-# ========================================================
-# 🔧 FIX 1: Configure arabic_reshaper for full support
-# ========================================================
-# Enable support for:
-#   - Arabic ligatures (lam-alef: لا، لل، إل...)
-#   - Tatweel character (ـ)
-#   - Arabic Presentation Forms-B
-#   - Bengali, etc.
-reshaper = arabic_reshaper.ArabicReshaper(
-    configuration={
-        "use_unshaped_instead_of_isolated": True,
-        "support_ligatures": True,
-        "delete_harakat": False,
-        "support_zwj": False,
-        "normalize_unicode": True,
-        "ARABIC LIGATURE BISMILLAH AR-RAHMAN AR-RAHEEM": True,
-        "ARABIC LIGATURE JALLAJALALOUHOU": True,
-        "ARABIC LIGATURE SALLALLAHOU ALAYHE WASALLAM": True,
-        "ARABIC LIGATURE ALLAH": True,
-    }
-)
-
-
-# ========================================================
-# 🔧 FIX 2: Improved fix_arabic with reshaper config
-# ========================================================
-def fix_arabic(text: str) -> str:
-    """
-    Reshape Arabic text for correct glyph rendering,
-    then apply BiDi algorithm for correct visual order.
-    """
-    if not text:
-        return ""
-
-    text = text.strip()
-
-    # Apply reshaping with our configured reshaper
-    reshaped = reshaper.reshape(text)
-
-    # Apply BiDi algorithm for correct RTL display
-    return get_display(reshaped)
-
-
-# ========================================================
-# 🔧 FIX 3: New helper — reshape full text FIRST,
-#   then split into visual words for measurement
-# ========================================================
-def _get_visual_words(draw, text, font):
-    """
-    Reshape the FULL text first (so all letter forms are correct),
-    then split by spaces for individual word width measurement.
-    Returns list of (visual_word, display_width).
-    """
-    full_visual = fix_arabic(text)
-    visual_words = full_visual.split(" ")
-    result = []
-    for vw in visual_words:
-        if not vw:
-            continue
-        bbox = draw.textbbox((0, 0), vw, font=font)
-        w = bbox[2] - bbox[0]
-        result.append((vw, w))
-    return result
-
+# ==================== TEXT HELPERS ====================
 
 def text_width(draw, text, font):
-    """Get the pixel width of a reshaped text string."""
-    fixed = fix_arabic(text)
-    bbox = draw.textbbox((0, 0), fixed, font=font)
+    bbox = draw.textbbox((0, 0), text, font=font)
     return bbox[2] - bbox[0]
 
 
-# ========================================================
-# 🔧 FIX 4: Corrected draw_rtl with anchor support
-# ========================================================
-def draw_rtl(draw, right_x, y, text, fill, font):
-    """
-    Draw a single line of Arabic text aligned to the right edge.
-    Uses Pillow 8+ anchor parameter for precise RTL positioning.
-    """
-    fixed = fix_arabic(text)
+def draw_text_centered(draw, y, text, fill, font):
     w = text_width(draw, text, font)
-
-    # Position text so its right edge is at right_x
-    x = right_x - w
-    draw.text((x, y), fixed, fill=fill, font=font)
-
+    x = (WIDTH - w) // 2
+    draw.text((x, y), text, fill=fill, font=font)
     return w
 
 
-# ========================================================
-# 🔧 FIX 5: Completely rewritten wrap_arabic
-#   Reshape the FULL paragraph first, then wrap visually
-# ========================================================
-def wrap_arabic(draw, text, font, max_width):
-    """
-    Wrap Arabic text into lines that fit within max_width.
+def draw_text_left(draw, left_x, y, text, fill, font):
+    draw.text((left_x, y), text, fill=fill, font=font)
+    return text_width(draw, text, font)
 
-    CRITICAL FIX: Reshape the ENTIRE text first so that every
-    letter gets the correct form (initial, medial, final, isolated)
-    based on its full context — not just a partial candidate string.
 
-    Then split the visual (already reshaped + bidi) text by spaces
-    to measure word widths and build lines.
-    """
-    visual_words = _get_visual_words(draw, text, font)
+def draw_text_right(draw, right_x, y, text, fill, font):
+    w = text_width(draw, text, font)
+    x = right_x - w
+    draw.text((x, y), text, fill=fill, font=font)
+    return w
 
-    if not visual_words:
-        return []
 
+def wrap_text(draw, text, font, max_width):
+    words = text.split()
     lines = []
-    current_line_words = []
-    current_line_width = 0
-    space_width = 0
+    current = []
 
-    # Measure space character width
-    space_bbox = draw.textbbox((0, 0), " ", font=font)
-    space_width = space_bbox[2] - space_bbox[0]
-
-    for visual_word, word_width in visual_words:
-        # Width if we add this word to current line
-        # (current words + spaces + new word)
-        spaces_needed = len(current_line_words) if current_line_words else 0
-        test_width = current_line_width + (space_width * spaces_needed) + word_width
-
-        if test_width <= max_width:
-            # Word fits on current line
-            current_line_words.append(visual_word)
-            current_line_width = current_line_width + (space_width * spaces_needed) + word_width
+    for word in words:
+        candidate = " ".join(current + [word])
+        if text_width(draw, candidate, font) <= max_width:
+            current.append(word)
         else:
-            # Word doesn't fit — save current line and start new one
-            if current_line_words:
-                lines.append(" ".join(current_line_words))
-            current_line_words = [visual_word]
-            current_line_width = word_width
+            if current:
+                lines.append(" ".join(current))
+            current = [word]
 
-    # Don't forget the last line
-    if current_line_words:
-        lines.append(" ".join(current_line_words))
+    if current:
+        lines.append(" ".join(current))
 
     return lines
 
 
-# ========================================================
-# 🔧 FIX 6: draw_rtl_multiline — same logic, cleaner
-# ========================================================
-def draw_rtl_multiline(
+def draw_text_multiline(
     draw,
-    right_x,
+    x,
     y,
     text,
     fill,
     font,
     max_width,
+    align="left",
     line_gap=15
 ):
-    """
-    Draw multi-line Arabic text, each line right-aligned.
-    Lines are already in correct visual order after BiDi processing.
-    """
-    lines = wrap_arabic(draw, text, font, max_width)
+    lines = wrap_text(draw, text, font, max_width)
 
     if not lines:
         return y
@@ -237,21 +139,26 @@ def draw_rtl_multiline(
     line_height = (bbox[3] - bbox[1]) + line_gap
 
     for line in lines:
-        draw_rtl(draw, right_x, y, line, fill, font)
+        w = text_width(draw, line, font)
+        if align == "center":
+            draw.text((x - w // 2, y), line, fill=fill, font=font)
+        elif align == "right":
+            draw.text((x - w, y), line, fill=fill, font=font)
+        else:
+            draw.text((x, y), line, fill=fill, font=font)
         y += line_height
 
     return y
 
 
-# ========================================================
-# 🔧 FIX 7: draw_text_centered for the decorative line
-#   (aesthetic improvement, not an RTL fix)
-# ========================================================
+# ==================== HTML ====================
+
 def clean_html(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text)
 
 
 # ==================== DATE ====================
+
 def format_date(date_string):
     if not date_string:
         return datetime.now().strftime("%d/%m/%Y")
@@ -274,22 +181,23 @@ def format_date(date_string):
 
 
 # ==================== AI ====================
+
 def summarize_with_ai(title, description):
     try:
         prompt = f"""
-        لديك الخبر التالي:
+Vous avez l'actualité suivante :
 
-        العنوان:
-        {title}
+Titre :
+{title}
 
-        المحتوى:
-        {description}
+Contenu :
+{description}
 
-        المطلوب:
-        قم بتلخيص الخبر إلى 3 نقاط قصيرة فقط.
-
-        بدون ترقيم.
-        """
+Consigne :
+Résumez l'actualité en exactement 3 points courts.
+Sans numérotation.
+En français.
+"""
 
         response = client.chat.completions.create(
             model="nvidia/nemotron-3-super-120b-a12b:free",
@@ -307,7 +215,7 @@ def summarize_with_ai(title, description):
         ]
 
         while len(summaries) < 3:
-            summaries.append("تفاصيل إضافية")
+            summaries.append("Détails supplémentaires")
 
         return summaries[:3]
 
@@ -315,12 +223,13 @@ def summarize_with_ai(title, description):
         print("AI ERROR:", e)
         return [
             title[:50],
-            title[20:70],
-            title[-50:]
+            title[20:70] if len(title) > 20 else title,
+            title[-50:] if len(title) > 50 else title,
         ]
 
 
 # ==================== RSS ====================
+
 def load_previous_news():
     if not os.path.exists(LAST_FILE):
         return set()
@@ -364,7 +273,7 @@ def fetch_rss_feed():
                 "id": link.text if link is not None else "",
                 "title": clean_html(title.text if title is not None else ""),
                 "description": clean_html(description.text if description is not None else ""),
-                "category": clean_html(category.text if category is not None else "أخبار"),
+                "category": clean_html(category.text if category is not None else "Actualités"),
                 "date": format_date(pub_date.text if pub_date is not None else ""),
                 "image": image_url
             })
@@ -390,11 +299,12 @@ def get_latest_news():
 
 
 # ==================== MAIN IMAGE ====================
+
 def create_main_image(news):
     img = Image.new("RGB", (WIDTH, HEIGHT), BG_COLOR)
     draw = ImageDraw.Draw(img)
 
-    RIGHT_EDGE = 1150
+    LEFT_EDGE = 50
     TEXT_MAX_W = 500
 
     try:
@@ -407,32 +317,31 @@ def create_main_image(news):
             )
             news_img = Image.open(response.raw).convert("RGB")
             news_img = news_img.resize((600, 700))
-            img.paste(news_img, (0, 0))
+            img.paste(news_img, (WIDTH - 600, 0))
     except Exception as e:
         print("IMAGE ERROR:", e)
 
-    # === Header ===
-    draw_rtl(draw, RIGHT_EDGE, 80, "السفير", RED, FONT_TITLE)
-    draw_rtl(draw, RIGHT_EDGE, 150, "مركز الإعلام", GRAY, FONT_SMALL)
+    draw_text_left(draw, LEFT_EDGE, 80, "Le Télégraphe", RED, FONT_TITLE)
+    draw_text_left(draw, LEFT_EDGE, 150, "Centre Média", GRAY, FONT_SMALL)
 
-    # === News Title ===
-    current_y = draw_rtl_multiline(
-        draw, RIGHT_EDGE, 250,
+    current_y = draw_text_multiline(
+        draw, LEFT_EDGE, 250,
         news["title"], WHITE, FONT_TITLE,
-        TEXT_MAX_W, line_gap=15
+        TEXT_MAX_W, align="left", line_gap=15
     )
     current_y += 30
 
-    # === Category & Date ===
-    draw_rtl(draw, RIGHT_EDGE, current_y, news["category"], RED, FONT_SMALL)
+    draw_text_left(draw, LEFT_EDGE, current_y, news["category"], RED, FONT_SMALL)
     current_y += 50
-    draw_rtl(draw, RIGHT_EDGE, current_y, news["date"], GRAY, FONT_TINY)
+
+    draw_text_left(draw, LEFT_EDGE, current_y, news["date"], GRAY, FONT_TINY)
 
     img.save(OUTPUT_IMAGE, "WEBP", quality=95)
     return OUTPUT_IMAGE
 
 
 # ==================== SUMMARY IMAGE ====================
+
 def create_summary_image(summary_text, index, news_image_url=None):
     bg_color = SUMMARY_BG_COLORS[index % len(SUMMARY_BG_COLORS)]
     img = Image.new("RGB", (WIDTH, HEIGHT), bg_color)
@@ -455,17 +364,16 @@ def create_summary_image(summary_text, index, news_image_url=None):
             pass
 
     draw = ImageDraw.Draw(img)
-    RIGHT_EDGE = 1100
     TEXT_MAX_W = 600
 
-    current_y = draw_rtl_multiline(
-        draw, RIGHT_EDGE, 230,
+    draw_text_multiline(
+        draw, WIDTH // 2, 230,
         summary_text, WHITE, FONT_SUMMARY,
-        TEXT_MAX_W, line_gap=25
+        TEXT_MAX_W, align="center", line_gap=25
     )
 
     draw.line(
-        [WIDTH - 600, HEIGHT - 80, WIDTH - 50, HEIGHT - 80],
+        [50, HEIGHT - 80, WIDTH - 50, HEIGHT - 80],
         fill=GRAY, width=2
     )
 
@@ -475,6 +383,7 @@ def create_summary_image(summary_text, index, news_image_url=None):
 
 
 # ==================== RESIZE ====================
+
 def resize_to_match_video(image_path, target_width, target_height):
     img = Image.open(image_path)
     new_img = Image.new("RGB", (target_width, target_height), BG_COLOR)
@@ -500,6 +409,7 @@ def resize_to_match_video(image_path, target_width, target_height):
 
 
 # ==================== VIDEO ====================
+
 def create_simple_video(image_paths):
     clips = []
     target_width = WIDTH
@@ -563,6 +473,7 @@ def create_simple_video(image_paths):
 
 
 # ==================== TELEGRAM ====================
+
 async def send_video_to_telegram(video_path, caption):
     try:
         bot = Bot(token=BOT_TOKEN)
@@ -591,6 +502,7 @@ def send_video_sync(video_path, caption):
 
 
 # ==================== MAIN ====================
+
 if __name__ == "__main__":
     print("STARTING BOT")
 
@@ -622,7 +534,7 @@ if __name__ == "__main__":
     caption = (
         f"📰 <b>{latest_news['title']}</b>\n\n"
         f"📅 {latest_news['date']}\n\n"
-        f"#اخبار"
+        f"#actualites"
     )
 
     send_video_sync(video_path, caption)
